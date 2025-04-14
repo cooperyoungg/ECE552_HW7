@@ -4,7 +4,6 @@ write_tag_array,memory_address, memory_data, memory_data_valid);
 
     //DESIGN NOTES: 
     //- check how long each memory access takes, as our counters could be at different values
-    //- double check specifications and make sure 
     // - PRETTY SURE ALL OCCURENCES OF 11 NEED TO BE CHANGED TO 32 OR 8 
 
     input clk, rst_n;
@@ -28,64 +27,38 @@ write_tag_array,memory_address, memory_data, memory_data_valid);
     wire [3:0]cnt1_in, cnt1_out, cnt1_sum;  //cnter signals for bytes_remain signal
 
 
-
-
-    
-
-
-    //each two byte word of data requires 4 cycles to be read from memory
-    //we need to grab 8, two byte words. fetching a block will entail minimum 32 cycles 
-    //will need some sort of counting unit I believe
-
-
     //next state logic
-    assign nxt_state = (~state) ? miss_detected ? bytes_remain;
-    dff state_ff(.q(state), .d(nxt_state), .wen(1'b1), .clk(clk), .rst(rst));   //state reg      
+    assign nxt_state = (~state) ? miss_detected ? bytes_remain;                 //if state=0, check for miss. if state=1, see if bytes remain
+    dff state_ff(.q(state), .d(nxt_state), .wen(1'b1), .clk(clk), .rst(rst));   //state FF 
 
 
 
     //fsm_busy & fsm_busy_ff logic
-    assign fsm_busy = nxt_state | busy_out;        //will remain busy if busy_out = 1 or future state projected to be WAIT
-    assign busy_in = (~state) ? miss_detected : bytes_remain; 
-    dff fsm_busy_ff(.q(busy_out), .d(busy_in), .wen(1'b1), .clk(clk), .rst(rst)); //FF for fsm output signal
+    assign fsm_busy = nxt_state | busy_out;                                             //will remain busy if busy_out = 1 or future state projected to be WAIT
+    assign busy_in = (~state) ? miss_detected : bytes_remain;                           //identical logic to nxt_state
+    dff fsm_busy_ff(.q(busy_out), .d(busy_in), .wen(1'b1), .clk(clk), .rst(rst));       //FF for fsm output signal
+    
+
+    dff cnt1_ff[3:0](.q(cnt1_out), .d(cnt1_in), .wen(nxt_state), .clk(clk), .rst(rst | cnt1_out == 4'b1000));   //infer a running counter FF
+    addsub_4bit cnt1_adder(.A(cnt1_out), .B(4'b1), .sub(1'b0), .Sum(cnt1_sum), .Ovfl());                     
 
 
 
-
-
-    //will need a counter & internal logic for bytes_remain
-    //cnt1 counts each rollover(cycle spent within next_state)
-    //think this is what we need to count to 4, or however many cycles we need to access memory
-
-    dff cnt1_ff[3:0](.q(cnt1_out), .d(cnt1_in), .wen(nxt_state), .clk(clk), .rst(rst | cnt1_out == 4'b1011)); //only count if nxt_state is WAIT
-
-    addsub_4bit cnt1_adder(.A(cnt1_out), .B(4'b1), .sub(1'b0), .Sum(cnt1_sum), .Ovfl());
-
-    assign cnt1_in = (~state) ?         4'b1 : 
-                     (miss_detected) ?  cnt1_sum : 
+    assign cnt1_in = (~state) ?         4'b0 : 
+                     (miss_detected) ?  cnt1_sum :          //TODO: make sure this works
                                         cnt1_out; 
 
-    assign bytes_remain = (state & ~(cnt1_out == 4'b1011));
-
-
-
+    assign bytes_remain = (state & ~(cnt1_out == 4'b1000));     //make sure we're counting to 8, could be 9 or some bullshit
 
 
 
     //write to data & tag array logic
-    assign write_data_array = state & memory_data_valid; 
-    assign write_tag_array = state & cnt1_out == 4'b1011; //why 11, not 8? 
+    assign write_data_array = state & memory_data_valid;        //valid data incoming & in WAIT
+    assign write_tag_array = state & cnt1_out == 4'b1000;      
 
+    //memory_address(to read) logic
 
-
-
-
-    //will need an additional counter/incrementor
-    //for addresses as we fetch different addresses we'll need to incrememnt as 
-    //we read from memory, as we will assign memory_address = ???????
-    wire [15:0] fill_addr;  //????????
-
-    assign memory_address = 0; 
+    assign memory_address = (rst) ? 16'b0 : {miss_address[15:4], cnt1_out << 1};
 
 
 
@@ -111,40 +84,8 @@ module dff (q, d, wen, clk, rst);
     end
 endmodule
 
-
-/**
-* This carry lookahead block generates the carry chain logic of 4 bits of the
-* full adder, plus the group generate/propagate signals to pass to a higher
-* level carry lookahead block
-*
-* NOTE: this file was borrowed from my 552 group's phase1 project
-*/
-module clb_low(A, B, Cin, Cout, Gout, Pout);
-// Port declarations
-input wire [3:0] A; 
-input wire [3:0] B;
-input wire Cin;
-output wire [2:0] Cout;
-output wire Gout;
-output wire Pout;
-
-// intermediate signals
-wire [3:0] G; // Generate signals between A and B bits
-wire [3:0] P; // Propagate signals between A and B bits
-
-assign G = A & B;
-assign P = A ^ B;
-
-assign Cout[0] = G[0] | (P[0] & Cin);
-assign Cout[1] = G[1] | (P[1]&G[0]) | (P[1]&P[0]&Cin);
-assign Cout[2] = G[2] | (P[2]&G[1]) | (P[2]&P[1]&G[0]) | (P[2]&P[1]&P[0]&Cin);
-
-assign Pout = &P;
-assign Gout = G[3] | (P[3]&G[2]) | (P[3]&P[2]&G[1]) | (P[3]&P[2]&P[1]&G[0]);
-endmodule
-
+//4-bit add/sub unit
 module addsub_4bit(A, B, sub, Sum, Ovfl);
-
     input wire [3:0] A;
     input wire [3:0] B;
     input wire sub;
@@ -165,5 +106,4 @@ module addsub_4bit(A, B, sub, Sum, Ovfl);
     and and1(Ovfl, xnor1out, xor1out);
 
     full_adder_1bit add4b[0:3](.A(A), .B(B_temp), .Cout(Cout), .Cin({Cout[2:0],sub}), .S(Sum));
-
 endmodule
